@@ -106,6 +106,17 @@ fixed r[N] = {};
 fixed e0;
 uint32_t colors[N] = {};
 
+uint32_t is_collide[N][N];
+
+void detect_collide() {
+  for (uint32_t i = 0; i < N; i++) {
+    for (uint32_t j = i + 1; j < N; j++) {
+      is_collide[i][j] = is_collide[j][i] 
+        = vec_dis2(pos[i], pos[j]) <= fx_mul(r[i] + r[j], r[i] + r[j]);
+    }
+  }
+}
+
 int pgs_once() {
   static uint32_t idxes[N];
   static int idx_inited = 0;
@@ -126,7 +137,7 @@ int pgs_once() {
 
     for (uint32_t p = k + 1; p < N; p++) {
       uint32_t j = idxes[p];
-      if (vec_dis2(pos[i], pos[j]) > fx_mul(r[i] + r[j], r[i] + r[j])) continue;
+      if (!is_collide[i][j]) continue;
       vec n = vec_sub(pos[j], pos[i]);
       fixed rel_v = vec_dot(v[i], n) - vec_dot(v[j], n);
       if (rel_v <= 0) continue;
@@ -152,6 +163,7 @@ int pgs_once() {
 }
 
 void collide() {
+  detect_collide();
   for (uint32_t i = 0; i < PGS_ITER_TIMES && pgs_once(); i++);
 }
 
