@@ -96,8 +96,11 @@ vec vec_norm(vec a) {
 #define FPS 25
 #define STEP_PER_FRAME 2
 #define dt (fx_div(fx_from_i32(1), fx_from_i32(FPS * STEP_PER_FRAME)))
-#define CANVAS_SIZE 25
+#define CANVAS_SIZE 32
 #define PGS_ITER_TIMES 5
+
+#define min__(x, y) ((x) < (y) ? (x) : (y))
+#define max__(x, y) ((x) > (y) ? (x) : (y))
 
 vec pos[N] = {};
 vec v[N] = {};
@@ -111,23 +114,23 @@ uint32_t is_collide[N][N];
 void detect_collide() {
   for (uint32_t i = 0; i < N; i++) {
     for (uint32_t j = i + 1; j < N; j++) {
-      is_collide[i][j] = is_collide[j][i] 
+      is_collide[i][j] = is_collide[j][i]
         = vec_dis2(pos[i], pos[j]) <= fx_mul(r[i] + r[j], r[i] + r[j]);
     }
   }
 }
 
-int pgs_once() {
+int32_t pgs_once() {
   static uint32_t idxes[N];
-  static int idx_inited = 0;
+  static int32_t idx_inited = 0;
   if (!idx_inited) {
-    for (int i = 0; i < N; i++) idxes[i] = i;
+    for (int32_t i = 0; i < N; i++) idxes[i] = i;
     idx_inited = 1;
   }
 
   shuffle(idxes, sizeof idxes / sizeof idxes[0]);
 
-  int ret = 0;
+  int32_t ret = 0;
   for (uint32_t k = 0; k < N; k++) {
     uint32_t i = idxes[k];
     if (pos[i].x - r[i] < 0 && v[i].x < 0) { ret = 1; v[i].x = -v[i].x; }
@@ -177,7 +180,7 @@ void step() {
 
 fixed energy_sum() {
   fixed res = 0;
-  for (int i = 0; i < N; i++) {
+  for (int32_t i = 0; i < N; i++) {
     res += (fx_mul(m[i], vec_len2(v[i])) >> 1) + fx_mul(m[i], fx_mul(g, BORDER_fx - pos[i].x));
   }
   return res;
@@ -189,42 +192,82 @@ void energy_correction() {
   for (uint32_t i = 0; i < N; i++) v[i].x = fx_mul(v[i].x, s);
 }
 
+// render the pixel if any pixel in 2x2 need to be rendered
+void bresenham_draw_circle_2x2ss(
+  uint32_t frame[CANVAS_SIZE][CANVAS_SIZE],
+  int32_t double_cx,
+  int32_t double_cy,
+  uint32_t double_r,
+  uint32_t c
+) {
+  int32_t cx = double_cx;
+  int32_t cy = double_cy;
+  int32_t r  = (int32_t)double_r;
+
+  int32_t x = 0;
+  int32_t y = r;
+  int32_t p = 1 - r;
+
+  while (x <= y) {
+    // y is monotonically decreasing, therefore only render column where x is even
+    if ((x & 1) == 0) {
+      // ignore x overflow, frame must leave enough space in the front and back
+      int32_t pxp = (cx + x) >> 1;
+      int32_t pxn = (cx - x) >> 1;
+
+      int32_t l = max__(-y, -cy);
+      int32_t h = min__(y + 1, 2 * CANVAS_SIZE - cy - 1);
+      for (int32_t i = l; i <= h; i += 2) {
+        int32_t py = (cy + i) >> 1;
+        frame[pxp][py] = c;
+        frame[pxn][py] = c;
+      }
+    }
+
+    x++;
+    if (p < 0) {
+      p += 2 * x + 1;
+    } else {
+      y--;
+      p += 2 * (x - y) + 1;
+    }
+  }
+
+  // draw last line separately
+  int32_t pxp = (cx + x) >> 1;
+  int32_t pxn = (cx - x) >> 1;
+
+  int32_t l = max__(-y, -cy);
+  int32_t h = min__(y + 1, 2 * CANVAS_SIZE - cy - 1);
+  for (int32_t i = l; i <= h; i += 2) {
+    int32_t py = (cy + i) >> 1;
+    frame[pxp][py] = c;
+    frame[pxn][py] = c;
+  }
+}
+
 void render_frame() {
   for (uint32_t i = 0; i < CANVAS_SIZE + 2; i++) render(i, 0, 0x0);
   for (uint32_t i = 0; i < CANVAS_SIZE + 2; i++) render(i, CANVAS_SIZE + 1, 0x0);
   for (uint32_t j = 0; j < CANVAS_SIZE + 2; j++) render(0, j, 0x0);
   for (uint32_t j = 0; j < CANVAS_SIZE + 2; j++) render(CANVAS_SIZE + 1, j, 0x0);
 
-  static uint32_t buffer[CANVAS_SIZE][CANVAS_SIZE];
-  fixed pixel_size = fx_div(BORDER_fx, fx_from_i32(CANVAS_SIZE));
+  static uint32_t raw_buffer[CANVAS_SIZE + 4][CANVAS_SIZE]; // avoid overflow accessing
+  static uint32_t (*buffer)[CANVAS_SIZE] = raw_buffer + 2;
+  fixed pixel_size = fx_div(fx_from_i32(CANVAS_SIZE), BORDER_fx);
 
   for (uint32_t i = 0; i < CANVAS_SIZE; i++)
     for (uint32_t j = 0; j < CANVAS_SIZE; j++)
       buffer[i][j] = 0x00FFFFFF;
 
+
   for (uint32_t k = 0; k < N; k++) {
-    int32_t min_i = fx_to_i32(fx_div(pos[k].x - r[k], pixel_size));
-    int32_t max_i = fx_to_i32(fx_div(pos[k].x + r[k], pixel_size)) + 1;
-    int32_t min_j = fx_to_i32(fx_div(pos[k].y - r[k], pixel_size));
-    int32_t max_j = fx_to_i32(fx_div(pos[k].y + r[k], pixel_size)) + 1;
-
-    if (min_i < 0) min_i = 0;
-    if (max_i > CANVAS_SIZE) max_i = CANVAS_SIZE;
-    if (min_j < 0) min_j = 0;
-    if (max_j > CANVAS_SIZE) max_j = CANVAS_SIZE;
-
-    for (int32_t i = min_i; i < max_i; i++) {
-      for (int32_t j = min_j; j < max_j; j++) {
-        vec center = (vec) {
-          .x = fx_mul(fx_from_i32(i), pixel_size) + (pixel_size >> 1),
-          .y = fx_mul(fx_from_i32(j), pixel_size) + (pixel_size >> 1)
-        };
-
-        if (vec_dis2(pos[k], center) <= fx_mul(r[k], r[k])) {
-          buffer[i][j] = colors[k];
-        }
-      }
-    }
+    bresenham_draw_circle_2x2ss(buffer,
+      fx_to_i32(fx_mul(pos[k].x, pixel_size) << 1),
+      fx_to_i32(fx_mul(pos[k].y, pixel_size) << 1),
+      fx_to_i32(fx_mul(r[k], pixel_size) << 1),
+      colors[k]
+    );
   }
 
   for (uint32_t i = 0; i < CANVAS_SIZE; i++) {
@@ -234,7 +277,7 @@ void render_frame() {
   }
 }
 
-int main() {
+int32_t main() {
   for (uint32_t i = 0; i < N; i++) {
     m[i] = fx_from_i32(rand_in(1, 7));
     r[i] = fx_sqrt(m[i]);
